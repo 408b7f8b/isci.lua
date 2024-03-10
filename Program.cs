@@ -6,16 +6,10 @@ using System.Collections.Generic;
 using isci.Allgemein;
 using isci.Daten;
 using isci.Beschreibung;
+using System.Data.Common;
 
 namespace isci.lua
 {
-    public class Konfiguration : Parameter
-    {
-        public Konfiguration(string datei) : base(datei) {
-
-        }
-    }
-
     class Program
     {
         static void variablenAusStrukturInLua(Datenstruktur structure, dynamic lua)
@@ -55,9 +49,9 @@ namespace isci.lua
                 var lua_variable = DateneintragPair.Key + " = ";
                 if (Dateneintrag.type == Datentypen.String)
                 {
-                    lua_variable += "’" + Dateneintrag.Serialisieren() + "’";
+                    lua_variable += "’" + Dateneintrag.WertSerialisieren() + "’";
                 } else {
-                    lua_variable += Dateneintrag.Serialisieren();
+                    lua_variable += Dateneintrag.WertSerialisieren();
                 }
 
                 lua(lua_variable);
@@ -70,23 +64,24 @@ namespace isci.lua
             {
                 var Dateneintrag = DateneintragPair.Value;
 
-                Dateneintrag.AusString(lua[DateneintragPair.Key].ToString());
+                Dateneintrag.WertAusString(lua[DateneintragPair.Key].ToString());
             }
         }
 
         static void Main(string[] args)
         {
-            var konfiguration = new Konfiguration("konfiguration.json");
+            var konfiguration = new Parameter(args);
             
-            var structure = new Datenstruktur(konfiguration.OrdnerDatenstruktur);            
+            var structure = new Datenstruktur(konfiguration);
+            var ausfuehrungsmodell = new Ausführungsmodell(konfiguration, structure.Zustand);
 
             var dm = new Datenmodell(konfiguration.Identifikation);           
             var example = new dtInt32(0, "example");
             dm.Dateneinträge.Add(example);
 
-            var beschreibung = new Modul(konfiguration.Identifikation, "isci.modulbasis", new ListeDateneintraege(){example});
-            beschreibung.Name = "Modulbasis Ressource " + konfiguration.Identifikation;
-            beschreibung.Beschreibung = "Modulbasis";
+            var beschreibung = new Modul(konfiguration.Identifikation, "isci.lua", new ListeDateneintraege(){example});
+            beschreibung.Name = "Lua Ressource " + konfiguration.Identifikation;
+            beschreibung.Beschreibung = "Lua";
             beschreibung.Speichern(konfiguration.OrdnerBeschreibungen + "/" + konfiguration.Identifikation + ".json");
 
             dm.Speichern(konfiguration.OrdnerDatenmodelle + "/" + konfiguration.Identifikation + ".json");
@@ -95,28 +90,25 @@ namespace isci.lua
             structure.DatenmodelleEinhängenAusOrdner(konfiguration.OrdnerDatenmodelle);
             structure.Start();
 
-            var Zustand = new dtZustand(konfiguration.OrdnerDatenstruktur);
-            Zustand.Start();
-
             dynamic lua = new DynamicLua.DynamicLua();
 
             variablenAusStrukturInLua(structure, lua);
 
             while(true)
             {
-                Zustand.Lesen();
+                structure.Zustand.WertAusSpeicherLesen();
 
-                var erfüllteTransitionen = konfiguration.Ausführungstransitionen.Where(a => a.Eingangszustand == (System.Int32)Zustand.value);
-                if (erfüllteTransitionen.Count<Ausführungstransition>() <= 0) continue;
+                if (ausfuehrungsmodell.AktuellerZustandModulAktivieren())
+                {
+                    variablenAusStrukturInLua(structure, lua);
 
-                variablenAusStrukturInLua(structure, lua);
+                    lua.DoFile("program.lua");
 
-                lua.DoFile("program.lua");
-                
-                structure.Schreiben();
+                    structure.Schreiben();
 
-                Zustand.value = erfüllteTransitionen.First<Ausführungstransition>().Ausgangszustand;
-                Zustand.Schreiben();
+                    ausfuehrungsmodell.Folgezustand();
+                    structure.Zustand.WertInSpeicherSchreiben();
+                }
             }
         }
     }
