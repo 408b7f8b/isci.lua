@@ -37,7 +37,7 @@ namespace isci.lua
                         value = Dateneintrag.Serialisieren();
                         break;
                     case Datentypen.Bool:
-                        type = "boolean";
+                        type = "boolean"; 
                         value = Dateneintrag.Serialisieren();
                         break;
                     case Datentypen.String:
@@ -49,12 +49,25 @@ namespace isci.lua
 
                 var lua_variable = type + " = " + value;*/
 
-                var lua_variable = DateneintragPair.Key + " = ";
-                if (Dateneintrag.type == Datentypen.String)
+                var lua_variable = DateneintragPair.Key.Replace('.', '_') + " = ";
+
+                switch (Dateneintrag.type)
                 {
-                    lua_variable += "'" + Dateneintrag.WertSerialisieren() + "'";
-                } else {
+                    case Datentypen.String: lua_variable += "'" + Dateneintrag.WertSerialisieren() + "'"; break;
+                    case Datentypen.UInt8:
+                    case Datentypen.UInt16:
+                    case Datentypen.UInt32:
+                    case Datentypen.UInt64:
+                    case Datentypen.Int8:
+                    case Datentypen.Int16:
+                    case Datentypen.Int32:
+                    case Datentypen.Int64:
+                    case Datentypen.Float:
+                    case Datentypen.Double:
+                    case Datentypen.Bool:
                     lua_variable += Dateneintrag.WertSerialisieren();
+                    break;
+                    default: continue;
                 }
 
                 lua.DoString(lua_variable);
@@ -67,7 +80,23 @@ namespace isci.lua
             {
                 var Dateneintrag = DateneintragPair.Value;
 
-                Dateneintrag.WertAusString(lua[DateneintragPair.Key].ToString());
+                switch (Dateneintrag.type)
+                {
+                    case Datentypen.String:
+                    case Datentypen.UInt8:
+                    case Datentypen.UInt16:
+                    case Datentypen.UInt32:
+                    case Datentypen.UInt64:
+                    case Datentypen.Int8:
+                    case Datentypen.Int16:
+                    case Datentypen.Int32:
+                    case Datentypen.Int64:
+                    case Datentypen.Float:
+                    case Datentypen.Double:
+                    case Datentypen.Bool:
+                    Dateneintrag.WertAusString(lua[DateneintragPair.Key.Replace('.', '_')].ToString());
+                    break;
+                }
             }
         }
 
@@ -75,61 +104,115 @@ namespace isci.lua
 
         static void Main(string[] args)
         {
-            /* dynamic lua = new DynamicLua.DynamicLua();
-            lua.DoFile("program.lua"); */
-
             var konfiguration = new Parameter(args);
+
+            if (!System.IO.File.Exists("main.lua"))
+            {
+                Logger.Fatal("Die notwendige Skriptdatei main.lua existiert nicht.");
+                System.Environment.Exit(-1);
+            }
             
             var structure = new Datenstruktur(konfiguration);
             var ausfuehrungsmodell = new Ausführungsmodell(konfiguration, structure.Zustand);
 
-            var dm = new Datenmodell(konfiguration.Identifikation);
-
             lua = new Lua();
 
-            lua.LoadFile("program.lua");
             var globalTable = lua.GetTable("_G");
+            var luaStandardVariablen = new List<string>();
 
             var en_name = globalTable.Keys.GetEnumerator();
+            for (int i = 0; i < globalTable.Keys.Count; ++i)
+            {
+                en_name.MoveNext();
+                luaStandardVariablen.Add((string)en_name.Current);
+                Logger.Information("Schließe Lua-Standardvariable aus: " + luaStandardVariablen.Last());
+            }
+            
+            Logger.Information("Lade Lua-Dateien.");
+            string var_mapping_datei = "variables_mapping.json";
+            string[] files = {};
+            if (System.IO.File.Exists(konfiguration.OrdnerKonfigurationen + "/main.lua"))
+            {
+                Logger.Information("main.lua liegt im Konfigurationenordner.");
+                files = System.IO.Directory.GetFiles(konfiguration.OrdnerKonfigurationen, "*.lua");
+                var_mapping_datei = konfiguration.OrdnerKonfigurationen + "/" + var_mapping_datei;
+            } else if (System.IO.File.Exists("main.lua")) {
+                Logger.Information("main.lua liegt im Ausführungsverzeichnis.");
+                files = System.IO.Directory.GetFiles(System.IO.Directory.GetCurrentDirectory(), "*.lua");
+            } else {
+                Logger.Fatal("Es existiert keine main.lua im Konfigurationenordner oder im Ausführungsordner.");
+                System.Environment.Exit(-1);
+            }
+
+            foreach (var file in files)
+            {
+                try {
+                    Logger.Information("Lade " + file);
+                    lua.LoadFile(file);
+                } catch (System.Exception e) {
+                    Logger.Fatal("Ausnahme beim Laden der " + file + ": " + e.Message);
+                    System.Environment.Exit(-1);
+                }
+            }
+
+            var variable_mapping = new Dictionary<string, string>();
+            if (System.IO.File.Exists(var_mapping_datei))
+            {
+                try {
+                    Logger.Information(var_mapping_datei + " wird für die fixe Bindung von Lua-Variablen an ISCI-Dateneinträge verwendet.");
+                    var file = System.IO.File.ReadAllText(var_mapping_datei);
+                    variable_mapping = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, string>>(file);
+                } catch (System.Exception e)
+                {
+                    Logger.Fatal("Ausnahme beim Öffnen/Verarbeiten der " + var_mapping_datei + ": " + e.Message);
+                    System.Environment.Exit(-1);
+                }
+            }
+
+            var dm = new Datenmodell(konfiguration.Identifikation);
+
+            en_name = globalTable.Keys.GetEnumerator();
             var en = globalTable.Values.GetEnumerator();
 
             for (int i = 0; i < globalTable.Keys.Count; ++i)
             {
                 en_name.MoveNext();
                 en.MoveNext();
-                var value = en.Current;
                 var name = (string)en_name.Current;
+                if (luaStandardVariablen.Contains(name)) continue;
+                if (variable_mapping.ContainsKey(name)) continue;
+                if (!name.StartsWith("PUB_")) continue;
+                name = name.Substring("PUB_".Length);
+                var value = en.Current;
                 var typ = value.GetType();
+                var logtext = "Variable aus Lua: " + name + "=";
                 if (typ == typeof(System.String))
                 {
-                    if (name == "_VERSION") continue;
-                    Console.WriteLine(name);
+                    Logger.Information(logtext + "'" + (string)value + "'");
                     dm.Add(new dtString((System.String)value, name));
                 }
                 else if (typ == typeof(System.Int64))
                 {
-                    Console.WriteLine(name);
+                    Logger.Information(logtext + ((System.Int64)value).ToString());
                     dm.Add(new dtInt64((System.Int64)value, name));
                 }
                 else if (typ == typeof(double))
                 {
-                    Console.WriteLine(name);
+                    Logger.Information(logtext + ((double)value).ToString());
                     dm.Add(new dtDouble((double)value, name));
                 }
             }
 
-            var beschreibung = new Modul(konfiguration.Identifikation, "isci.lua", dm.Dateneinträge);
-            beschreibung.Name = "Lua Ressource " + konfiguration.Identifikation;
-            beschreibung.Beschreibung = "Lua";
-            beschreibung.Speichern(konfiguration.OrdnerBeschreibungen + "/" + konfiguration.Identifikation + ".json");
+            new Modul(konfiguration.Identifikation, "isci.lua", dm.Dateneinträge) {
+                Name = "Lua Ressource " + konfiguration.Identifikation,
+                Beschreibung = "Lua"
+            }.Speichern(konfiguration);
 
             dm.Speichern(konfiguration.OrdnerDatenmodelle + "/" + konfiguration.Identifikation + ".json");
 
             structure.DatenmodellEinhängen(dm);
             structure.DatenmodelleEinhängenAusOrdner(konfiguration.OrdnerDatenmodelle);
             structure.Start();
-
-
 
             variablenAusStrukturInLua(structure, lua);
 
@@ -139,7 +222,7 @@ namespace isci.lua
 
                 if (ausfuehrungsmodell.AktuellerZustandModulAktivieren())
                 {
-                    foreach (var dateneintrag in structure.dateneinträge)
+                    /* foreach (var dateneintrag in structure.dateneinträge)
                     {
                         if (dateneintrag.Value.type == Datentypen.String)
                         {
@@ -147,35 +230,51 @@ namespace isci.lua
                         } else {
                             lua[dateneintrag.Key] = dateneintrag.Value.WertSerialisieren();
                         }
-                    }
-
-                    lua.DoString("main()");
-
-                    foreach (var dateneintrag in structure.dateneinträge)
-                    {
-                        if (dateneintrag.Value.type == Datentypen.String)
-                        {
-                            dateneintrag.Value.Wert = (string)lua[dateneintrag.Key];
-                        }
-                        else if (dateneintrag.Value.type == Datentypen.Int64)
-                        {
-                            dateneintrag.Value.Wert = (Int64)lua[dateneintrag.Key];
-                        }
-                        else if (dateneintrag.Value.type == Datentypen.Double)
-                        {
-                            dateneintrag.Value.Wert = (double)lua[dateneintrag.Key];
-                        }
-                    }
-
+                    } */
                     variablenAusStrukturInLua(structure, lua);
-/* 
-                    lua.DoFile("program.lua"); */
+
+                    foreach (var variable in variable_mapping)
+                    {
+                        var dateneintrag = structure.dateneinträge[variable.Value];
+
+                        lua[variable.Key] = dateneintrag.WertSerialisieren();
+                    }
+
+                    lua.DoString("main()"); //Verarbeitung
+
+                    LuaVariablenInStruktur(structure, lua);
+
+                    foreach (var variable in variable_mapping)
+                    {
+                        var dateneintrag = structure.dateneinträge[variable.Value];
+
+                        switch (dateneintrag.type)
+                        {
+                            case Datentypen.String:
+                            case Datentypen.UInt8:
+                            case Datentypen.UInt16:
+                            case Datentypen.UInt32:
+                            case Datentypen.UInt64:
+                            case Datentypen.Int8:
+                            case Datentypen.Int16:
+                            case Datentypen.Int32:
+                            case Datentypen.Int64:
+                            case Datentypen.Float:
+                            case Datentypen.Double:
+                            case Datentypen.Bool:
+                            dateneintrag.WertAusString(lua[variable.Key].ToString());
+                            break;
+                        }
+                    }
 
                     structure.Schreiben();
 
                     ausfuehrungsmodell.Folgezustand();
                     structure.Zustand.WertInSpeicherSchreiben();
                 }
+
+                System.Threading.Thread.Sleep(1);
+                //Helfer.SleepForMicroseconds()
             }
         }
     }

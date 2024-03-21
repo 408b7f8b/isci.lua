@@ -14,5 +14,7 @@ end
 b = fact(5)
 MyFunction(b)
 
+PUB_testvar = 0.5
+
 c = 0.5
 d = 'oh harro'
